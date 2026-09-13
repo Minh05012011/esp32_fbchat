@@ -5,20 +5,20 @@
 #define WIFI_PASSWORD "05012011"
 
 // ================== FB TOKENS ==================
-#define FB_DTSG_HARDCODED    "NAfxQr9OSFq3mpYaggZxrQlLPoei1yNwjlQVgrSVsbL6YxVCCy2tgLw:46:1789276331"
-#define FB_JAZOEST_HARDCODED "25852"
-#define FB_REV_HARDCODED     "1047410072"
+#define FB_DTSG_HARDCODED    ""
+#define FB_JAZOEST_HARDCODED ""
+#define FB_REV_HARDCODED     ""
 
 // ================== COOKIE (paste tại đây) ==================
 #define MANUAL_COOKIE \
-  "datr=uWClah2ZRz7QbHHFroMtxs_d; sb=w2ClakH8XnOa3JW_7cC_b_u0; dpr=1.25; ps_l=1; ps_n=1; wd=974x836; c_user=61569124953493; fr=1NXugKYArGp6WdGFz.AWdrkNChuS6EnbbIVarMRCuS7fTZwfN7YvHUCQJ1mtSPgqXojFs.BqpjCw..AAA.0.0.BqpjCw.AWeQMZduxxTHY0MsrV_xwIzpCYY; xs=46%3A6RgPseH-Iq6cjg%3A2%3A1789276331%3A-1%3A-1%3A%3AAcz6VJjmhBoFo0Kl8BeLmLY8DN5wkBSceBjyKJGW5g; presence=C%7B%22t3%22%3A%5B%5D%2C%22utc3%22%3A1789276338520%2C%22v%22%3A1%7D"
+  ""
 
 // ================== LOGIN FALLBACK ==================
-#define FB_USERNAME "61569124953493"
-#define FB_PASSWORD "Namminh123"
+#define FB_USERNAME ""
+#define FB_PASSWORD ""
 
 // ================== TARGET ==================
-#define TARGET_THREAD_ID "1100091695933928"
+#define TARGET_THREAD_ID ""
 
 // ================== OPTIONS ==================
 #define AUTO_REPLY        0
