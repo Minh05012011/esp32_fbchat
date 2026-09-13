@@ -1,8 +1,8 @@
 #pragma once
 
 // ================== WiFi ==================
-#define WIFI_SSID     "NAM MINH"
-#define WIFI_PASSWORD "05012011"
+#define WIFI_SSID     ""
+#define WIFI_PASSWORD ""
 
 // ================== FB TOKENS ==================
 #define FB_DTSG_HARDCODED    ""
