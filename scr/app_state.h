@@ -1,0 +1,34 @@
+#pragma once
+#include <Arduino.h>
+#include <WiFiClientSecure.h>
+
+// --- Cookie / token ---
+extern String g_uid;
+extern String g_cookies;
+extern String g_fbDtsg;
+extern String g_jazoest;
+extern String g_rev;
+
+// --- Sync state ---
+extern String g_syncSequenceId;
+extern String g_syncToken;
+extern String g_lastSeqId;
+
+// --- WS / MQTT ---
+extern WiFiClientSecure wsClient;
+extern String    wsRxBuf;
+extern String    mqttRxBuffer;
+extern bool      mqttConnected;
+extern uint16_t  nextPacketId;
+extern unsigned long lastPing;
+extern unsigned long lastReconnectMs;
+extern unsigned long lastRamLogMs;
+extern int retryCount;
+
+// --- Counters ---
+extern uint32_t g_msgReceived;
+extern uint32_t g_msgSent;
+extern uint32_t g_wsReconnects;
+
+// --- Serial buffer ---
+extern String g_serialBuf;
