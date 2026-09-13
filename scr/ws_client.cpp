@@ -44,7 +44,9 @@ bool wsConnect(const String& sid) {
   req += "Sec-WebSocket-Protocol: mqtt\r\n";
   req += "Cookie: " + g_cookies + "\r\n";
   req += "Origin: https://www.facebook.com\r\n";
-  req += "User-Agent: " + String(WEB_UA) + "\r\n";
+    // Dùng Android Chrome UA giống Python stable version
+  req += "User-Agent: Mozilla/5.0 (Linux; Android 9; SM-G973U Build/PPR1.180610.011) "
+         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Mobile Safari/537.36\r\n";
   req += "Referer: https://www.facebook.com/\r\n";
   req += "\r\n";
 
@@ -159,6 +161,21 @@ uint8_t wsPoll(String& outPayload) {
   wsRxBuf.remove(0, pos + plen);
   if (opcode == 0x9) { wsSendFrame(0xA, (const uint8_t*)outPayload.c_str(), outPayload.length()); return 0; }
   if (opcode == 0xA) return 0;
-  if (opcode == 0x8) { wsClient.stop(); return 0x8; }
+
+  if (opcode == 0x8) {
+    // CLOSE frame: 2 byte đầu = status code, phần còn lại = reason (UTF-8)
+    uint16_t code = 0;
+    String reason = "";
+    if (outPayload.length() >= 2) {
+      code = ((uint8_t)outPayload[0] << 8) | (uint8_t)outPayload[1];
+      if (outPayload.length() > 2) {
+        reason = outPayload.substring(2);
+      }
+    }
+    Serial.printf("[WS] ❌ Close code=%u reason='%s'\n",
+                  code, reason.c_str());
+    wsClient.stop();
+    return 0x8;
+  }
   return opcode;
 }

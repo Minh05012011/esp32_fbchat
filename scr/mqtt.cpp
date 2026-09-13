@@ -6,10 +6,13 @@
 #include "fb_auth.h"
 #include "fb_send.h"
 #include "config.h"
+#include "gemini.h"
 
 #include <ArduinoJson.h>
 
-// ---------- Packet builders ----------
+// ============================================================
+//  MQTT packet builders
+// ============================================================
 static void encodeRemLen(String& out, uint32_t len) {
   do {
     uint8_t b = len % 128; len /= 128;
@@ -53,9 +56,23 @@ static String mqttPubAck(uint16_t pid) {
   return p;
 }
 
-static String mqttPingReq() { String p; p += (char)0xC0; p += (char)0x00; return p; }
+// SUBSCRIBE + QoS 1 (giống paho client.subscribe("/t_ms", 1))
+static String mqttSubscribePacket(uint16_t pid, const String& topic, uint8_t qos) {
+  String vh;
+  vh += (char)((pid >> 8) & 0xFF);
+  vh += (char)(pid & 0xFF);
+  vh += (char)((topic.length() >> 8) & 0xFF);
+  vh += (char)(topic.length() & 0xFF);
+  vh += topic;
+  vh += (char)(qos & 0x03);
+  String pkt; pkt += (char)0x82;   // SUBSCRIBE (0x80 | 0x02 QoS1)
+  encodeRemLen(pkt, vh.length()); pkt += vh;
+  return pkt;
+}
 
-// ---------- Outgoing MQTT ----------
+// ============================================================
+//  Outgoing MQTT
+// ============================================================
 void sendMqttConnect() {
   String user = "{";
   user += "\"u\":\"" + g_uid + "\",";
@@ -72,9 +89,17 @@ void sendMqttConnect() {
   user += "\"no_auto_fg\":true,";
   user += "\"gas\":null,";
   user += "\"pack\":[]}";
-  String pkt = mqttConnectPacket("mqttwsclient", user);
+
+  // ✅ Client ID ngẫu nhiên mỗi lần connect → tránh xung đột phiên
+  //    (thay cho "mqttwsclient" cố định)
+  char clientId[24];
+  snprintf(clientId, sizeof(clientId), "esp_%08x%08x",
+           (unsigned)esp_random(), (unsigned)esp_random());
+
+  String pkt = mqttConnectPacket(clientId, user);
   wsSendFrame(0x2, (const uint8_t*)pkt.c_str(), pkt.length());
-  Serial.printf("[MQTT] -> CONNECT (%u bytes)\n", pkt.length());
+  Serial.printf("[MQTT] -> CONNECT (clientId=%s, %u bytes)\n",
+                clientId, pkt.length());
   logRAM("sau MQTT CONNECT sent");
 }
 
@@ -103,7 +128,9 @@ void sendCreateQueue() {
   }
 }
 
-// ---------- Queue error ----------
+// ============================================================
+//  Queue error
+// ============================================================
 void handleQueueError(const String& ecStr) {
   Serial.printf("⚠️ Queue error: %s\n", ecStr.c_str());
   logRAM("queue error");
@@ -129,7 +156,9 @@ void handleQueueError(const String& ecStr) {
   sendCreateQueue();
 }
 
-// ---------- Incoming PUB ----------
+// ============================================================
+//  Incoming PUB
+// ============================================================
 void handleMqttPublish(const String& topic, const String& body) {
   Serial.printf("\n📨 [PUB] %s (%d bytes)\n", topic.c_str(), body.length());
   logRAM("trc parse PUB");
@@ -160,6 +189,7 @@ void handleMqttPublish(const String& topic, const String& body) {
     return;
   }
 
+  // --- Sync metadata ---
   if (doc.containsKey("syncToken"))
     g_syncToken = doc["syncToken"].as<String>();
   if (doc.containsKey("firstDeltaSeqId"))
@@ -167,6 +197,7 @@ void handleMqttPublish(const String& topic, const String& body) {
   if (doc.containsKey("lastIssuedSeqId"))
     g_lastSeqId = doc["lastIssuedSeqId"].as<String>();
 
+  // --- Xử lý từng delta ---
   bool matched = false;
   for (JsonObject d : doc["deltas"].as<JsonArray>()) {
     JsonObject meta = d["messageMetadata"];
@@ -201,10 +232,108 @@ void handleMqttPublish(const String& topic, const String& body) {
 
     g_msgReceived++;
 
+    // ==========================================================
+    //  LỆNH /ai — Đóng WS, xử lý ở loop() (handlePendingAI)
+    // ==========================================================
+    String bodyStr = String(text);
+    bodyStr.trim();
+          // ==========================================================
+    //  LỆNH /q  —  Groq (giống /ai nhưng service = groq)
+    // ==========================================================
+    if (bodyStr == "/q" || bodyStr.startsWith("/q ")) {
+      if (g_aiPending) {
+        Serial.println("   ⏳ Đang xử lý câu trước, bỏ qua");
+        sendGroupMessage(threadFb, "⏳ Đang xử lý câu trước, đợi chút nhé!");
+        continue;
+      }
+
+      String prompt = (bodyStr.length() > 2) ? bodyStr.substring(3) : "";
+      prompt.trim();
+
+      if (prompt.length() == 0) {
+        Serial.println("   ❓ /q thiếu prompt → reply cú pháp");
+        sendGroupMessage(threadFb, "❓ Cú pháp: /q <câu hỏi>");
+        continue;
+      }
+
+      Serial.println("   📤 Gửi ack 'đã nhận lệnh'...");
+      sendGroupMessage(threadFb, "⚡ Đã nhận lệnh, đang xử lý...");
+
+      Serial.println("   ⚡ [/q] Lưu context (service=groq)");
+
+      g_aiPending      = true;
+      g_aiService      = "groq";        // ← khác /ai
+      g_aiPrompt       = prompt;
+      g_aiThreadId     = threadFb;
+      g_aiReplyToMsgId = String(msgId);
+
+      Serial.printf("   💾 RAM trước khi gọi Groq: free=%u\n", ESP.getFreeHeap());
+      logRAM("sau khi set /q pending");
+
+      return;
+    }
+        if (bodyStr == "/ai" || bodyStr.startsWith("/ai ")) {
+      // Chống spam: nếu đang xử lý câu trước → từ chối
+      if (g_aiPending) {
+        Serial.println("   ⏳ Đang xử lý câu trước, bỏ qua");
+        sendGroupMessage(threadFb, "⏳ Đang xử lý câu trước, đợi chút nhé!");
+        continue;
+      }
+
+      String prompt = (bodyStr.length() > 3) ? bodyStr.substring(4) : "";
+      prompt.trim();
+
+      if (prompt.length() == 0) {
+        Serial.println("   ❓ /ai thiếu prompt → reply cú pháp");
+        sendGroupMessage(threadFb, "❓ Cú pháp: /ai <câu hỏi>");
+        continue;
+      }
+
+      // Ack qua HTTP (WS vẫn đang mở — không ảnh hưởng)
+      Serial.println("   📤 Gửi ack 'đã nhận lệnh'...");
+      sendGroupMessage(threadFb, "✅ Đã nhận lệnh, đang xử lý...");
+
+      // Set pending — KHÔNG đóng WS
+      Serial.println("   🧠 [/ai] Lưu context (WS giữ nguyên)");
+
+      g_aiPending      = true;
+      g_aiService      = "gemini";      // ← THÊM DÒNG NÀY
+      g_aiPrompt       = prompt;
+      g_aiThreadId     = threadFb;
+      g_aiReplyToMsgId = String(msgId);
+
+      // KHÔNG gọi wsClient.stop() nữa
+      // KHÔNG clear mqttRxBuffer
+
+      Serial.printf("   💾 RAM trước khi gọi Gemini: free=%u\n", ESP.getFreeHeap());
+      logRAM("sau khi set /ai pending");
+
+      return;
+    }
+
+    // ==========================================================
+    //  AUTO_REPLY — trả lời mọi tin nhắn bằng Gemini
+    //  ⚠️ Nhánh này gọi Gemini khi WS vẫn mở → 2 TLS session chồng
+    //  → RAM căng. Chỉ bật khi chấp nhận rủi ro OOM.
+    //  Cách an toàn: dùng /ai (giải phóng WS trước).
+    // ==========================================================
 #if AUTO_REPLY
-    String reply = getRandomMessage();
-    Serial.printf("   ↩️  Auto-reply: %s\n", reply.c_str());
-    sendGroupMessage(threadFb, reply);
+    String userMsg = String(text);
+    if (userMsg.length() < 2) {
+      Serial.println("   ⏭️  Tin quá ngắn, bỏ qua");
+    } else {
+      if (userMsg.length() > 300) userMsg = userMsg.substring(0, 300);
+
+      Serial.println("   🤖 Đang gọi Gemini...");
+      String reply;
+      if (geminiAsk(userMsg, reply)) {
+        Serial.printf("   ↩️  Reply: %s\n", reply.c_str());
+        sendGroupMessage(threadFb, reply);
+      } else {
+        Serial.println("   ⚠️ Gemini fail, thử câu dự phòng");
+        sendGroupMessage(threadFb, getRandomMessage());
+      }
+    }
 #endif
   }
 
@@ -212,6 +341,7 @@ void handleMqttPublish(const String& topic, const String& body) {
     logRAM("sau handle msg");
   }
 
+  // --- Queue error ---
   if (doc.containsKey("errorCode")) {
     String ecStr = "";
     int ecInt = 0;
@@ -229,11 +359,15 @@ void handleMqttPublish(const String& topic, const String& body) {
   }
 }
 
+// ============================================================
+//  MQTT buffer parser
+// ============================================================
 void processMqttBuffer() {
   while (mqttRxBuffer.length() >= 2) {
     uint8_t type = (uint8_t)mqttRxBuffer[0];
     uint8_t typeHi = type >> 4;
 
+    // ---- Decode Remaining Length ----
     uint32_t remLen = 0, mult = 1;
     int pos = 1; uint8_t b;
     do {
@@ -250,13 +384,56 @@ void processMqttBuffer() {
     mqttRxBuffer.remove(0, pos + remLen);
 
     switch (typeHi) {
-      case 2:
-        Serial.println("✅ MQTT CONNACK");
+      // ==========================================================
+      //  CONNACK (type 2)
+      //  Payload: [session_present (1B)] [return_code (1B)]
+      // ==========================================================
+      case 2: {
+        uint8_t sp = 0;
+        uint8_t rc = 0xFF;
+        if (payload.length() >= 2) {
+          sp = (uint8_t)payload[0];
+          rc = (uint8_t)payload[1];
+        }
+        Serial.printf("✅ MQTT CONNACK | rc=%u | session_present=%u\n", rc, sp);
+
+        if (rc != 0) {
+          Serial.printf("   ❌ CONNACK rejected (rc=%u) → đóng WS để reconnect sạch\n", rc);
+          mqttConnected = false;
+
+          // rc=4 (bad user/pass) hoặc rc=5 (not authorized)
+          // → gần như chắc chắn cookie chết → đẩy nhanh counter
+          if (rc == 4 || rc == 5) {
+            g_consecutiveConnFails += 3;
+            Serial.printf("   ⚠️ rc=%u → nghi cookie chết (failCount=%d)\n",
+                          rc, g_consecutiveConnFails);
+          } else {
+            g_consecutiveConnFails++;
+          }
+
+          wsClient.stop();
+          break;
+        }
+
         mqttConnected = true;
         retryCount = 0;
+        g_consecutiveConnFails = 0;
         logRAM("sau CONNACK");
+
+        // ⚠️ SUBSCRIBE /t_ms QoS1 — BẮT BUỘC, giống paho
+        // FB sẽ đóng kết nối nếu client không subscribe.
+        Serial.println("[MQTT] bỏ qua SUBSCRIBE (st:/t_ms tự động subscribe)");
+
+        // Delay nhẹ như Python (Python fetch seq_id qua HTTP mất ~1s)
+        delay(300);
+
         sendCreateQueue();
         break;
+      }
+
+      // ==========================================================
+      //  PUBLISH (type 3)
+      // ==========================================================
       case 3: {
         if (payload.length() < 2) break;
         int qos = (type >> 1) & 0x03;
@@ -277,8 +454,38 @@ void processMqttBuffer() {
         }
         break;
       }
-      case 13:
+
+      // ==========================================================
+      //  PUBACK (type 4)
+      // ==========================================================
+      case 4:
+        // không cần xử lý, chỉ log nhẹ nếu muốn
         break;
+
+      // ==========================================================
+      //  SUBACK (type 9)  — payload: [pid(2B)] [granted_qos(1B)]
+      // ==========================================================
+      case 9: {
+        if (payload.length() >= 3) {
+          uint8_t granted = (uint8_t)payload[2];
+          if (granted == 0x80) {
+            Serial.println("[MQTT] SUBACK | ❌ FAILED (0x80)");
+          } else {
+            Serial.printf("[MQTT] SUBACK | granted_qos=%u\n", granted);
+          }
+        } else {
+          Serial.println("[MQTT] SUBACK (short payload)");
+        }
+        break;
+      }
+
+      // ==========================================================
+      //  PINGRESP (type 13)
+      // ==========================================================
+      case 13:
+        // PINGRESP — không cần làm gì
+        break;
+
       default:
         Serial.printf("[MQTT] type=%d len=%u\n", typeHi, remLen);
     }
