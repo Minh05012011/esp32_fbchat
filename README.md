@@ -22,3 +22,11 @@ esp32_fbchat/
     ├── ws_client.h / .cpp  # wsConnect, wsSendFrame, wsPoll
     ├── mqtt.h / .cpp       # MQTT builders, sendMqttConnect, sendCreateQueue, PUB handler
     └── serial_cmd.h / .cpp # printSerialHelp, handleSerialCommand, pollSerialInput
+## Changelog — 13/09/2026
+
+1. **Thêm reaction emoji cho tin nhắn** — sửa cmd serial để test
+2. **Tích hợp Gemini AI** (`/ai <câu hỏi>`)
+3. **Fix lỗi server đóng ngẫu nhiên (code 1000)** — random client ID mỗi lần reconnect
+4. **Tích hợp Groq API** (`/q <câu hỏi>`)
+5. **Auto reboot** định kỳ — chỉ khi rảnh, không cắt ngang lệnh
+6. **Auto new cookie** — Setup Portal qua WebServer khi cookie hết hạn
