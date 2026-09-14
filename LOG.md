@@ -117,7 +117,7 @@ ESP32_FB_Listener/
 | File | Chức năng |
 |---|---|
 | `commands.h` | Khai báo `handleGroupCommand(threadId, actorId, body, mid, timestamp)` — entry point xử lý mọi tin nhắn nhóm đến từ tầng dispatch (GraphQL/MQTT). Tham số `mid` để dành cho tương lai vì hiện GraphQL không trả `message_id` thật. |
-| `commands.cpp` | **`sendAck()`** — helper phản hồi nhanh: nếu có `mid` thật (không bắt đầu bằng `"ts:"`) thì thả reaction ❤️ qua `fbReactMessage()`, thất bại thì fallback gửi text `"⚡ Đã nhận lệnh, đang xử lý..."`; không có `mid` thì gửi text luôn.<br>**`handleGroupCommand()`** — dispatch theo prefix: `/q <câu hỏi>` gọi Groq, `/ai <câu hỏi>` gọi Gemini (chặn trùng lệnh qua cờ `g_aiPending`, báo lỗi cú pháp nếu thiếu prompt); có nhánh `#if AUTO_REPLY` tự trả lời mọi tin bằng Gemini khi bật cờ trong `config.h`; tin không khớp lệnh nào → bỏ qua và log ra Serial. |
+| `commands.cpp` | **`sendAck()`** — helper phản hồi nhanh: nếu có `mid` thật (không bắt đầu bằng `"ts:"`) thì thả reaction ❤️ qua `fbReactMessage()`, thất bại thì fallback gửi text `"⚡ Đã nhận lệnh, đang xử lý..."`; không có `mid` thì gửi text luôn.<br>**`handleGroupCommand()`** — dispatch theo prefix: `/q <câu hỏi>` gọi Groq, `/ai <câu hỏi>` gọi Gemini (chặn trùng lệnh qua cờ `g_aiPending`, báo lỗi cú pháp nếu thiếu prompt); có nhánh `#if AUTO_REPLY` tự trả lời mọi tin bằng Gemini khi bật cờ trong `config.h`; tin không khớp lệnh nào → bỏ qua và log ra Serial.luu y  , command nay dang phat trien , hoat dong cuc ky khong on dinh neu mqtt lien tuc bi disconect |
 
 ### 7️⃣ Entry point — `main.ino`
 
