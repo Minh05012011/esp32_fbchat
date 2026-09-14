@@ -188,11 +188,6 @@ build_flags =
 
 ### 6.2. Build & Upload
 
-```bash
-pio run              # build
-pio run -t upload    # nạp vào ESP32
-pio device monitor   # mở Serial Monitor @115200
-```
 
 ### 6.3. Lần đầu chạy
 
