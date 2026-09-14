@@ -34,7 +34,7 @@ esp32_fbchat/
 ### 📁 Cấu trúc thư mục mới
 
 ```text
-ESP32_FB_Listener/
+esp32_fbchat/
 ├── main.ino                       ← Entry point (setup/loop)
 └── src/
     ├── core/                      ── NỀN TẢNG ──
