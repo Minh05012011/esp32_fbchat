@@ -59,6 +59,10 @@ ESP32_FB_Listener/
     │   ├── gemini.cpp/.h          → Google Gemini API
     │   └── groq.cpp/.h            → Groq API
     │
+    ├── commands/                  ── XỬ LÝ LỆNH (MỚI) ──
+    │   ├── commands.cpp           → handleGroupCommand(), sendAck()
+    │   └── commands.h             → Khai báo interface lệnh nhóm
+    │
     └── ui/                        ── GIAO DIỆN ──
         ├── serial_cmd.cpp/.h      → Lệnh Serial
         └── setup_portal.cpp/.h    → WebServer cấu hình cookie
@@ -108,7 +112,14 @@ ESP32_FB_Listener/
 | `serial_cmd` | `pollSerialInput()` đọc từng byte (hỗ trợ UTF-8 emoji). `handleSerialCommand()` xử lý lệnh `/help`, `/info`, `/ai`, `/ai-info`, `/random`, `/ping`, `/reconnect`, `/clear`, `/cookie`, `/react`, `/unreact`, `/setup`, `/nvs-info`, `/nvs-clear`. Có bảng alias emoji (`like`→👍, `love`→❤️…). Gõ text không có `/` → gửi thẳng vào group. |
 | `setup_portal` | WebServer port 80 phục vụ form HTML nhập cookie/dtsg/jazoest/rev, POST `/save` → lưu NVS → reboot. Chạy blocking khi cookie chết hoặc NVS trống. |
 
-### 6️⃣ Entry point — `main.ino`
+### 6️⃣ Tầng COMMANDS — Xử lý lệnh nhóm (MỚI)
+
+| File | Chức năng |
+|---|---|
+| `commands.h` | Khai báo `handleGroupCommand(threadId, actorId, body, mid, timestamp)` — entry point xử lý mọi tin nhắn nhóm đến từ tầng dispatch (GraphQL/MQTT). Tham số `mid` để dành cho tương lai vì hiện GraphQL không trả `message_id` thật. |
+| `commands.cpp` | **`sendAck()`** — helper phản hồi nhanh: nếu có `mid` thật (không bắt đầu bằng `"ts:"`) thì thả reaction ❤️ qua `fbReactMessage()`, thất bại thì fallback gửi text `"⚡ Đã nhận lệnh, đang xử lý..."`; không có `mid` thì gửi text luôn.<br>**`handleGroupCommand()`** — dispatch theo prefix: `/q <câu hỏi>` gọi Groq, `/ai <câu hỏi>` gọi Gemini (chặn trùng lệnh qua cờ `g_aiPending`, báo lỗi cú pháp nếu thiếu prompt); có nhánh `#if AUTO_REPLY` tự trả lời mọi tin bằng Gemini khi bật cờ trong `config.h`; tin không khớp lệnh nào → bỏ qua và log ra Serial. |
+
+### 7️⃣ Entry point — `main.ino`
 
 **`setup()`**
 1. Khởi tạo Serial, random seed
@@ -180,3 +191,16 @@ Cơ sở: Port từ file Python `__messageListenGraphQL.py` — dùng cùng `doc
 | **Parser** | Thuần string (tránh chi phí RAM của ArduinoJson trên payload lớn) |
 | **Trạng thái** | So sánh `timestamp` mới nhất với baseline đã lưu để tránh xử lý trùng |
 | **Vai trò** | Dự phòng khi kênh MQTT/WS bị Facebook chặn hoặc ngắt bất thường |
+
+---
+
+## 🆕 Cập nhật — Tầng `commands/` (thêm sau 14/09/2026)
+
+Tách toàn bộ logic xử lý lệnh nhóm ra khỏi tầng dispatch mạng, gom vào module riêng `src/commands/`.
+
+| File | Nội dung |
+|---|---|
+| `commands.h` | Interface duy nhất `handleGroupCommand(...)` để các tầng `net/` (MQTT, GraphQL Listener) gọi vào khi có tin nhắn mới, không cần biết chi tiết xử lý bên trong. |
+| `commands.cpp` | Cài đặt `sendAck()` (ack bằng reaction ❤️, fallback text) và `handleGroupCommand()` (dispatch `/q`, `/ai`, auto-reply Gemini). |
+
+**Lợi ích:** tách rời tầng nhận dữ liệu (net) khỏi tầng xử lý nghiệp vụ (commands) → dễ mở rộng thêm lệnh mới mà không đụng vào `mqtt.cpp` hay `fb_graphql_listen.cpp`.
