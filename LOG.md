@@ -22,3 +22,8 @@ esp32_fbchat/
 4. **Tích hợp Groq API** (`/q <câu hỏi>`)
 5. **Auto reboot** định kỳ — chỉ khi rảnh, không cắt ngang lệnh
 6. **Auto new cookie** — Setup Portal qua WebServer khi cookie hết hạn
+
+
+
+
+
