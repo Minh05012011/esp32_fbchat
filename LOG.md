@@ -204,3 +204,61 @@ Tách toàn bộ logic xử lý lệnh nhóm ra khỏi tầng dispatch mạng, g
 | `commands.cpp` | Cài đặt `sendAck()` (ack bằng reaction ❤️, fallback text) và `handleGroupCommand()` (dispatch `/q`, `/ai`, auto-reply Gemini). |
 
 **Lợi ích:** tách rời tầng nhận dữ liệu (net) khỏi tầng xử lý nghiệp vụ (commands) → dễ mở rộng thêm lệnh mới mà không đụng vào `mqtt.cpp` hay `fb_graphql_listen.cpp`.
+---
+
+## 🆕 Changelog — 17/09/2026
+
+### 1️⃣ README.md viết lại theo hướng "giới thiệu chung"
+
+Do project đang trong giai đoạn nâng cấp liên tục, `README.md` được viết lại để **chỉ giới thiệu mục đích/tính năng tổng quan**, không còn liệt kê cấu trúc thư mục hay vị trí file cụ thể (tránh bị lỗi thời). Phần chi tiết kỹ thuật/cấu trúc/cập nhật tiếp tục được ghi nhận trong file này (`LOG.md`).
+
+### 2️⃣ `src/net/mqtt.h` / `mqtt.cpp` — Subscribe `/thread_typing`
+
+- Thêm hàm `sendMqttSubscribe(topic, qos)` — gửi gói MQTT `SUBSCRIBE` thủ công cho 1 topic bất kỳ (trước đây chỉ có `/t_ms` được auto-subscribe qua field `"st"` trong `CONNECT`, hàm `mqttSubscribePacket()` build sẵn nhưng chưa từng được gọi).
+- Gọi `sendMqttSubscribe("/thread_typing", 0)` ngay sau khi `CONNACK` thành công (`rc=0`), song song với `/t_ms`.
+- Thêm nhánh xử lý riêng trong `handleMqttPublish()` cho topic `/thread_typing` — parse đúng schema thật (theo test suite của thư viện `fbchat`):
+```json
+  { "sender_fbid": 1234, "state": 0, "type": "typ", "thread": "4321" }
+```
+  `state`: 1 = đang gõ, 0 = đã dừng gõ. Log ra: `[type] user=<sender_fbid> thread=<thread> -> ĐANG GÕ/ĐÃ DỪNG`, chỉ in nếu `thread` khớp `TARGET_THREAD_ID` (hoặc `TARGET_THREAD_ID` rỗng).
+
+### 3️⃣ Fix lỗi WS/MQTT tự rớt liên tục (nguyên nhân đã xác định — không còn cần GraphQL polling để né lỗi này)
+
+Nguyên nhân: gói `MQTT CONNECT` (trong `mqtt.cpp`) khai báo **Keep Alive = 10 giây**, nhưng bản test trước đó chỉ gửi `PINGREQ` mỗi 45 giây (gấp 4.5 lần ngưỡng 1.5×keepalive = 15s theo spec MQTT) → Facebook broker chủ động đóng kết nối (`Close code=1000 reason='Bye'`), không phải lỗi mạng hay lỗi parser.
+
+**2 fix áp dụng trong `main.ino`:**
+- `PING_INTERVAL_MS`: `45000` → `8000` (an toàn dưới ngưỡng 15s), sau đó chỉnh tiếp xuống `4000` (mục 6) để có thêm biên an toàn.
+- Trong `connectWsAndMqtt()`: reset `g_syncToken = ""` mỗi lần reconnect — vì `clientId` random lại mỗi lần connect nên session MQTT/queue cũ trên Facebook đã mất; nếu không reset, `sendCreateQueue()` sẽ gọi `get_diffs` bằng `sync_token` cũ → luôn dính `ERROR_QUEUE_NOT_FOUND` ngay sau reconnect.
+
+### 4️⃣ `main.ino` — chuyển từ GraphQL polling sang WS + MQTT (test build)
+
+Viết lại `setup()`/`loop()` để dùng `ws_client.h` + `mqtt.h` thay cho `fb_graphql_listen.h`, **giữ nguyên 100%** phần NVS (`storageLoad`/`FBConfig`), Setup Portal (`runSetupPortal`), verify cookie / login fallback, static IP, auto-reboot, serial command. Thêm:
+- `connectWsAndMqtt()` — mở WS tới `edge-chat.facebook.com:443`, gửi `MQTT CONNECT` (bên trong tự động subscribe `/t_ms` + `/thread_typing`), áp cả 2 fix disconnect ở mục 3.
+- Auto-reconnect WS trong `loop()` nếu mất kết nối (retry mỗi 3s).
+- `sendMqttPing()` gửi `PINGREQ` thủ công theo `PING_INTERVAL_MS`.
+
+### 5️⃣ Tính năng mới — Quick Reply (nút bấm trong Messenger)
+
+Mục tiêu dài hạn: dùng Quick Reply để làm nút bật/tắt thiết bị (vd. bóng đèn qua relay GPIO) — **phần điều khiển GPIO thực tế chưa làm, để dành thêm sau**. Hiện tại mới dừng ở tầng gửi/test nút.
+
+| File | Vai trò |
+|---|---|
+| `src/fb_api/fb_quick_reply.h/.cpp` (MỚI) | `sendQuickReplyMessage(threadId, body, buttons[], count)` — POST `/messaging/send/` kèm field `platform_xmd` chứa JSON `{"quick_replies":[{"content_type":"text","title":..,"payload":..}]}` (build bằng ArduinoJson). Cấu trúc form dựa theo `sendGroupMessage()` sẵn có, port từ `__sendQuickReply.py`. Chỉ hỗ trợ nút loại `"text"` (loại duy nhất ổn định trên cả Web lẫn Mobile). |
+| `src/commands/qr_serial.h/.cpp` (MỚI) | `handleQrSerialCommand(threadId, spec, contentSend)` — parse spec dạng `"Title1:Payload1;Title2:Payload2"` (giống `parse_qr_spec()` bên Python: không có `:` thì `payload = title`), rồi gọi `sendQuickReplyMessage()`. |
+| `src/ui/serial_cmd.cpp` | Thêm lệnh `/qr <title>:<payload>;...` — VD: `/qr hello:hello`, `/qr Bật đèn:ON;Tắt đèn:OFF`. Cập nhật `printSerialHelp()`. |
+| `src/core/config.h` | Thêm sẵn `LIGHT_RELAY_PIN` (default GPIO2) và `LIGHT_RELAY_ACTIVE_LOW` — **để dành cho tính năng bật/tắt đèn qua GPIO, chưa được dùng ở đâu trong code**. |
+
+**Lưu ý khi test:** nhận diện nút nào được bấm hiện tại phải dựa vào **title** của nút (vì khi user bấm, FB gửi lại 1 tin nhắn thường có `body = title`, không có field `payload` trong luồng nhận tin nhắn qua `/t_ms` hiện tại) — payload trong request gửi đi vẫn được set đúng theo Facebook API, nhưng tầng nhận (`handleMqttPublish`) chưa parse lại được payload này.
+
+### 6️⃣ Tính năng mới — AI (Groq) tự tạo Quick Reply qua marker `[QR]...[/QR]`
+
+Mở rộng thêm cho tính năng Quick Reply ở mục 5: giờ đây **Groq có thể tự quyết định chèn nút bấm** vào câu trả lời khi user yêu cầu (VD: "cho tôi vài lựa chọn", "tạo menu"), không cần gõ `/qr` thủ công nữa.
+
+| File | Thay đổi |
+|---|---|
+| `src/core/config.h` | Thêm `MAX_QR_FROM_AI` (6) và `MAX_QR_TITLE_LEN` (20 — giới hạn độ dài title theo FB). `GROQ_SYSTEM_PROMPT` được viết lại chi tiết: chỉ chèn `[QR]Title1:Title1;Title2:Title2[/QR]` khi user yêu cầu rõ ràng bằng từ khóa ("lựa chọn nhanh", "tạo nút", "menu", ...), tối đa 5 nút, `payload` luôn = `title` (đảm bảo so khớp ổn định), block QR đặt ở đầu câu trả lời rồi xuống dòng viết text giải thích. |
+| `src/ai/groq.h/.cpp` | Thêm `groqExtractQr(reply, outText, outBtns, maxOut)` — tách block `[QR]...[/QR]` ra khỏi reply thô của Groq, parse spec `Title:Payload;...` (stricter hơn `qr_serial`: bỏ qua nút thiếu `:` hoặc title rỗng, tự truncate title quá `MAX_QR_TITLE_LEN`, ép `payload = title`). Trả về `-1` nếu reply không có marker, `0` nếu có marker nhưng parse fail, `n>0` nếu có `n` nút hợp lệ. |
+| `src/ai/gemini.cpp` (`handlePendingAI`) | Khi `service == "groq"`: gọi `groqExtractQr()` trên reply. Nếu có nút hợp lệ → gửi 1 tin duy nhất kèm nút qua `sendQuickReplyMessage()` (fallback gửi text thường nếu gửi QR thất bại). Nếu có marker `[QR]` nhưng parse fail → **tự động retry gọi Groq thêm 1 lần** trước khi bỏ cuộc và báo lỗi. Nếu không có marker → gửi text bình thường như cũ. Nhánh Gemini không đổi (luôn gửi text). |
+| `main.ino` | `PING_INTERVAL_MS` chỉnh từ `8000` xuống **`4000`** (dự phòng thêm biên an toàn so với ngưỡng 15s của keepalive=10s). |
+
+**Lưu ý:** tính năng này phụ thuộc Groq trả đúng format `[QR]...[/QR]` theo prompt đã định — nếu Groq "quên" đóng `[/QR]` hoặc trả sai cú pháp, code đã có 1 lớp retry nhưng vẫn có thể rơi vào trường hợp báo lỗi `"❌ Có lỗi khi tạo lựa chọn, thử lại sau nhé!"` nếu retry cũng fail.Ngoài ra, tính năng trả lời nhanh (Quick Reply/button) hiện chỉ hoạt động trên phiên bản Messenger Web.
