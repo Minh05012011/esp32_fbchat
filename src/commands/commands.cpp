@@ -11,17 +11,41 @@
 //  Ack helper — có mid thì thả tim, không có thì gửi text
 // ============================================================
 void sendAck(const String& threadId, const String& mid) {
+  // Danh sách emoji để random
+  static const char* EMOJIS[] = {
+    "❤️", "👍", "🔥", "😍", "🎉",
+    "😎", "🤖", "⚡", "💯", "🚀"
+  };
+  static const size_t EMOJI_COUNT = sizeof(EMOJIS) / sizeof(EMOJIS[0]);
+
   // Chỉ thả tim khi có mid THẬT (không phải mid giả dạng "ts:...")
   if (mid.length() > 0 && !mid.startsWith("ts:")) {
-    Serial.printf("   ❤️  Thả tim vào mid=%s\n", mid.c_str());
-    bool ok = fbReactMessage(mid, String("❤️"), /*removeReaction=*/false);
+    // Chọn emoji ngẫu nhiên
+    const char* emoji = EMOJIS[esp_random() % EMOJI_COUNT];
+
+    Serial.printf("   %s  Thả reaction %s vào mid=%s\n",
+                  emoji, emoji, mid.c_str());
+
+    bool ok = fbReactMessage(mid, String(emoji), /*removeReaction=*/false);
     Serial.printf("   → react %s\n", ok ? "OK" : "FAIL");
     if (ok) return;   // thành công → không gửi text nữa
     Serial.println("   ⚠️ React fail → fallback gửi text");
   }
-  // Không có mid thật → gửi text
-  sendGroupMessage(threadId, "⚡ Đã nhận lệnh, đang xử lý...");
+
+  // Không có mid thật → gửi text (cũng random luôn cho vui)
+  static const char* FALLBACK_MSGS[] = {
+    "⚡ Đã nhận lệnh, đang xử lý...",
+    "🚀 Đang chạy, chờ xíu nhé...",
+    "🤖 Đã hiểu, xử lý ngay đây...",
+    "🔥 Nhận lệnh, bắt đầu liền...",
+    "👍 Ok, đang làm..."
+  };
+  static const size_t MSG_COUNT = sizeof(FALLBACK_MSGS) / sizeof(FALLBACK_MSGS[0]);
+
+  const char* msg = FALLBACK_MSGS[esp_random() % MSG_COUNT];
+  sendGroupMessage(threadId, msg);
 }
+
 
 // ============================================================
 //  Dispatch lệnh
