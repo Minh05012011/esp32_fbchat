@@ -9,6 +9,7 @@
 #include "src/fb_api/cookie.h"
 #include "src/core/config.h"
 #include "src/ai/gemini.h" 
+#include "src/commands/qr_serial.h"       // ← THÊM MỚI (Quick Reply test)
 // ============================================================
 //  Emoji shortcut map — gõ tên thay vì phải dán emoji
 //  (serial terminal nhiều khi không gõ được emoji)
@@ -75,6 +76,9 @@ void printSerialHelp() {
   Serial.println("║            angry fire care");
   Serial.println("║     VD: /react mid.$abc... love");
   Serial.println("║         /react mid.$abc... 👍");
+  Serial.println("║   /qr <title>:<payload>;...  → gửi Quick Reply (nút bấm)");
+  Serial.println("║     VD: /qr hello:hello");
+  Serial.println("║         /qr Bật đèn:ON;Tắt đèn:OFF");
   Serial.println("║ (Enter trống sẽ bị bỏ qua)");
   Serial.println("╚════════════════════════════════════");
   Serial.println();
@@ -223,6 +227,17 @@ void handleSerialCommand(String cmd) {
       // Python sample cũng hardcode string tuỳ ý vào action REMOVE_REACTION.
       bool ok = fbReactMessage(mid, String("👍"), /*removeReaction=*/true);
       Serial.println(ok ? "✅ Done" : "❌ Failed");
+      return;
+    }
+
+    // ---------- /qr <title1>:<payload1>;<title2>:<payload2> ----------
+    if (lcCmd == "/qr") {
+      // Lấy nguyên phần sau "/qr " (không tách theo dấu cách, vì title có
+      // thể chứa khoảng trắng) — giống cách /ai lấy prompt.
+      int sp = raw.indexOf(' ');
+      String spec = (sp < 0) ? "" : raw.substring(sp + 1);
+      spec.trim();
+      handleQrSerialCommand(String(TARGET_THREAD_ID), spec, "");
       return;
     }
 

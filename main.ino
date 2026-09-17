@@ -15,46 +15,35 @@
 #include "src/fb_api/cookie.h"
 #include "src/fb_api/fb_auth.h"
 #include "src/fb_api/fb_send.h"
-#include "src/net/fb_graphql_listen.h"
+#include "src/fb_api/fb_quick_reply.h"   
+#include "src/net/ws_client.h"
+#include "src/net/mqtt.h"
 #include "src/ai/gemini.h"
 #include "src/commands/commands.h"
 
-// ================================================================
-//  Config
-// ================================================================
-static const unsigned long GQL_POLL_INTERVAL_MS = 2000;
-static unsigned long       g_gqlNextPollMs = 0;
 
-// ================================================================
-//  Callback GraphQL
-//  GraphQL không trả message_id thật → mid = ""
-// ================================================================
-static void onNewMessage(const String& threadId,
-                         const String& actorId,
-                         const String& body,
-                         const String& /*gqlMid*/,
-                         long long timestamp) {
-  Serial.println();
-  Serial.println("╔════════════════════════════════════════════");
-  Serial.println("║ 🆕 [GQL] TIN NHẮN MỚI");
-  Serial.println("╠════════════════════════════════════════════");
-  Serial.printf ("║ Thread  : %s\n", threadId.c_str());
-  Serial.printf ("║ Actor   : %s\n", actorId.c_str());
-  Serial.printf ("║ TS      : %lld\n", timestamp);
-  Serial.printf ("║ Body    : %s\n", body.c_str());
-  Serial.printf ("║ Heap    : %u bytes\n", (unsigned)ESP.getFreeHeap());
-  Serial.println("╚════════════════════════════════════════════");
+static unsigned long g_lastPingMs = 0;
 
-  // Bỏ tin của bot
-  if (actorId == g_uid) {
-    Serial.println("   ⏭️  Tin của bot, bỏ qua");
-    return;
+static const unsigned long PING_INTERVAL_MS = 4000;
+
+static void sendMqttPing() {
+  uint8_t pkt[2] = { 0xC0, 0x00 }; // PINGREQ — fixed header only
+  wsSendFrame(0x2, pkt, sizeof(pkt));
+  Serial.println("[MQTT] -> PINGREQ");
+}
+
+static bool connectWsAndMqtt() {
+  String sid = genSessionId();
+  if (!wsConnect(sid)) {
+    Serial.println("❌ [WS] Connect fail");
+    return false;
   }
+  mqttRxBuffer = "";
 
-  g_msgReceived++;
-
-  // Dispatch
-  handleGroupCommand(threadId, actorId, body, /*mid=*/"", timestamp);
+  g_syncToken  = "";
+  sendMqttConnect();
+  g_lastPingMs = millis();
+  return true;
 }
 
 // ================================================================
@@ -65,8 +54,7 @@ void setup() {
   delay(1000);
   randomSeed(esp_random());
 
-  Serial.println("\n=== ESP32 FB LISTENER ===");
-  Serial.println("🎯 Mode: GraphQL polling (WS + MQTT đều tắt)");
+  Serial.println("\n=== ESP32 FB LISTENER (WS + MQTT + Quick Reply test) ===");
   Serial.printf("🎯 Group: %s\n", TARGET_THREAD_ID);
   Serial.printf("🤖 Auto-reply: %s\n", AUTO_REPLY ? "ON" : "OFF");
 
@@ -157,26 +145,25 @@ void setup() {
   g_syncSequenceId = seq;
   g_lastSeqId      = seq;
   g_syncToken      = "";
-  Serial.printf("✅ seq=%s\n", g_lastSeqId.c_str());
+  Serial.printf("✅ uid=%s seq=%s\n", g_uid.c_str(), g_lastSeqId.c_str());
 
   // ============================================================
-  //  [2] GraphQL Listener setup
+  //  [2] WS + MQTT connect
   // ============================================================
-  Serial.println("\n=== [2] GraphQL Listener setup ===");
-  fbGraphQLSetCallback(onNewMessage);
-  fbGraphQLSetLimit(15);
-  fbGraphQLResetBaseline();
+  Serial.println("\n=== [2] Connect WS + MQTT ===");
+  if (!connectWsAndMqtt()) {
+    Serial.println("⚠️ Connect lần đầu fail — sẽ tự retry trong loop()");
+  }
 
   // ============================================================
   //  Timers
   // ============================================================
   lastRamLogMs   = millis();
   g_lastRebootMs = millis();
-  g_gqlNextPollMs = millis() + GQL_POLL_INTERVAL_MS;
 
   logRAMFull("SETUP DONE");
   printSerialHelp();
-  Serial.println("💡 Sẵn sàng! (GraphQL polling — không WS, không MQTT)");
+  Serial.println("💡 Sẵn sàng! Gõ /qr hello:hello để test Quick Reply.");
   Serial.println();
 }
 
@@ -205,8 +192,6 @@ void loop() {
       Serial.printf ("║ MinFree    : %u bytes\n", (unsigned)ESP.getMinFreeHeap());
       Serial.printf ("║ Msg recv   : %u\n", g_msgReceived);
       Serial.printf ("║ Msg sent   : %u\n", g_msgSent);
-      Serial.printf ("║ GQL polls  : %lu\n", fbGraphQLGetPollCount());
-      Serial.printf ("║ GQL new    : %lu\n", fbGraphQLGetNewMsgCount());
       Serial.println("╚══════════════════════════════════════════");
       Serial.flush();
       delay(200);
@@ -233,20 +218,38 @@ void loop() {
   }
 
   // ==========================================================
-  //  GraphQL Poll — interval chính xác (chống drift)
+  //  Reconnect WS nếu rớt
   // ==========================================================
-  unsigned long now = millis();
-  if ((long)(now - g_gqlNextPollMs) >= 0) {
-    fbGraphQLPollOnce();
-
-    // Cộng dồn interval thay vì reset về now → không bị trôi
-    g_gqlNextPollMs += GQL_POLL_INTERVAL_MS;
-
-    // Nếu poll vừa rồi block quá lâu (> 5 interval), reset về now
-    // để tránh dồn dập poll liên tiếp
-    if ((long)(now - g_gqlNextPollMs) > (long)(GQL_POLL_INTERVAL_MS * 5)) {
-      g_gqlNextPollMs = millis() + GQL_POLL_INTERVAL_MS;
+  if (!wsClient.connected()) {
+    static unsigned long lastRetry = 0;
+    if (millis() - lastRetry > 3000) {
+      lastRetry = millis();
+      Serial.println("🔄 [WS] Mất kết nối — thử reconnect...");
+      mqttConnected = false;
+      connectWsAndMqtt();
     }
+    delay(50);
+    return;
+  }
+
+  // ==========================================================
+  //  Đọc dữ liệu WS -> gom vào mqttRxBuffer -> parse MQTT
+  // ==========================================================
+  String payload;
+  uint8_t opcode = wsPoll(payload);
+  if ((opcode == 0x1 || opcode == 0x2) && payload.length() > 0) {
+    mqttRxBuffer += payload;
+    processMqttBuffer();
+  } else if (opcode == 0x8) {
+    mqttConnected = false;
+  }
+
+  // ==========================================================
+  //  Giữ kết nối sống bằng PINGREQ (mỗi 8s — khớp keepalive=10s)
+  // ==========================================================
+  if (mqttConnected && millis() - g_lastPingMs > PING_INTERVAL_MS) {
+    sendMqttPing();
+    g_lastPingMs = millis();
   }
 
   // ==========================================================

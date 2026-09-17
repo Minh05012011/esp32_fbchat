@@ -7,7 +7,7 @@
 #include "src/fb_api/fb_send.h"
 #include "src/core/config.h"
 #include "src/ai/gemini.h"
-
+#include "src/commands/commands.h"
 #include <ArduinoJson.h>
 
 // ============================================================
@@ -68,6 +68,21 @@ static String mqttSubscribePacket(uint16_t pid, const String& topic, uint8_t qos
   String pkt; pkt += (char)0x82;   // SUBSCRIBE (0x80 | 0x02 QoS1)
   encodeRemLen(pkt, vh.length()); pkt += vh;
   return pkt;
+}
+
+// ============================================================
+//  SUBSCRIBE (dùng để test 1 topic bất kỳ, vd "/thread_typing")
+// ============================================================
+void sendMqttSubscribe(const String& topic, uint8_t qos) {
+  if (!wsClient.connected()) {
+    Serial.println("[MQTT] ⚠️ Chưa có WS, không thể SUBSCRIBE");
+    return;
+  }
+  uint16_t pid = nextPacketId++;
+  String pkt = mqttSubscribePacket(pid, topic, qos);
+  wsSendFrame(0x2, (const uint8_t*)pkt.c_str(), pkt.length());
+  Serial.printf("[MQTT] -> SUBSCRIBE topic=%s qos=%u pid=%u\n",
+                topic.c_str(), qos, pid);
 }
 
 // ============================================================
@@ -163,6 +178,43 @@ void handleMqttPublish(const String& topic, const String& body) {
   Serial.printf("\n📨 [PUB] %s (%d bytes)\n", topic.c_str(), body.length());
   logRAM("trc parse PUB");
 
+  // ==========================================================
+  //  🧪 TEST: /thread_typing — payload nhỏ, KHÔNG theo format
+  //  "deltas" như /t_ms nên xử lý riêng, tách khỏi logic bên dưới.
+  //  Schema thật (theo test suite của fbchat):
+  //  { "sender_fbid": 1234, "state": 0/1, "type": "typ", "thread": "4321" }
+  // ==========================================================
+  if (topic == "/thread_typing") {
+    Serial.printf("   ⌨️  RAW: %s\n", body.c_str());
+
+#if ARDUINOJSON_VERSION_MAJOR >= 7
+    JsonDocument typDoc;
+#else
+    DynamicJsonDocument typDoc(1024);
+#endif
+    DeserializationError typErr = deserializeJson(typDoc, body);
+    if (!typErr) {
+      String senderFbid = typDoc["sender_fbid"].as<String>(); // ID lớn -> lấy dạng chuỗi
+      int    state      = typDoc["state"]  | -1;              // 1=đang gõ, 0=dừng gõ
+      String evType     = typDoc["type"]   | "";
+      String threadId   = typDoc["thread"] | "";
+
+      bool isTyping = (state == 1);
+
+      if (String(TARGET_THREAD_ID).length() > 0 &&
+          threadId != String(TARGET_THREAD_ID)) {
+        // Sự kiện không thuộc nhóm đang theo dõi -> bỏ qua
+      } else {
+        Serial.printf("   ⌨️  [%s] user=%s thread=%s -> %s\n",
+                       evType.c_str(), senderFbid.c_str(), threadId.c_str(),
+                       isTyping ? "ĐANG GÕ" : "ĐÃ DỪNG");
+      }
+    } else {
+      Serial.printf("   ⚠️ Không parse được JSON typing: %s\n", typErr.c_str());
+    }
+    return; // không đi tiếp vào logic parse "/t_ms" bên dưới
+  }
+
   if (body.length() > 60000) {
     Serial.println("   ⚠️ Body quá lớn, bỏ qua");
     return;
@@ -256,8 +308,8 @@ void handleMqttPublish(const String& topic, const String& body) {
         continue;
       }
 
-      Serial.println("   📤 Gửi ack 'đã nhận lệnh'...");
-      sendGroupMessage(threadFb, "⚡ Đã nhận lệnh, đang xử lý...");
+Serial.println("   📤 sendAck() — thả tim hoặc gửi text...");
+sendAck(threadFb, String(msgId));
 
       Serial.println("   ⚡ [/q] Lưu context (service=groq)");
 
@@ -290,8 +342,8 @@ void handleMqttPublish(const String& topic, const String& body) {
       }
 
       // Ack qua HTTP (WS vẫn đang mở — không ảnh hưởng)
-      Serial.println("   📤 Gửi ack 'đã nhận lệnh'...");
-      sendGroupMessage(threadFb, "✅ Đã nhận lệnh, đang xử lý...");
+Serial.println("   📤 sendAck() — thả tim hoặc gửi text...");
+sendAck(threadFb, String(msgId));
 
       // Set pending — KHÔNG đóng WS
       Serial.println("   🧠 [/ai] Lưu context (WS giữ nguyên)");
@@ -420,9 +472,13 @@ void processMqttBuffer() {
         g_consecutiveConnFails = 0;
         logRAM("sau CONNACK");
 
-        // ⚠️ SUBSCRIBE /t_ms QoS1 — BẮT BUỘC, giống paho
-        // FB sẽ đóng kết nối nếu client không subscribe.
-        Serial.println("[MQTT] bỏ qua SUBSCRIBE (st:/t_ms tự động subscribe)");
+        // ⚠️ /t_ms đã được tự động subscribe qua field "st" trong CONNECT
+        // payload, không cần SUBSCRIBE riêng cho topic này.
+        Serial.println("[MQTT] bỏ qua SUBSCRIBE /t_ms (đã auto qua 'st')");
+
+        // 🧪 TEST: subscribe thêm /thread_typing để xem sự kiện "đang gõ"
+        // QoS 0 là đủ, vì đây chỉ là thông báo tạm thời, không cần ACK.
+        sendMqttSubscribe("/thread_typing", 0);
 
         // Delay nhẹ như Python (Python fetch seq_id qua HTTP mất ~1s)
         delay(300);

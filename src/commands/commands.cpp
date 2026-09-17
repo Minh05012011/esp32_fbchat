@@ -10,7 +10,7 @@
 // ============================================================
 //  Ack helper — có mid thì thả tim, không có thì gửi text
 // ============================================================
-static void sendAck(const String& threadId, const String& mid) {
+void sendAck(const String& threadId, const String& mid) {
   // Chỉ thả tim khi có mid THẬT (không phải mid giả dạng "ts:...")
   if (mid.length() > 0 && !mid.startsWith("ts:")) {
     Serial.printf("   ❤️  Thả tim vào mid=%s\n", mid.c_str());

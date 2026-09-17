@@ -239,3 +239,73 @@ void groqPrintInfo() {
   Serial.printf ("║ System     : %.60s...\n", GROQ_SYSTEM_PROMPT);
   Serial.println("╚═════════════════════════════════");
 }
+
+// ============================================================
+//  Parse spec QR do AI trả về: "Title1:Payload1;Title2:Payload2;..."
+//  - Strict hơn qr_serial: bỏ nút thiếu ':' hoặc title rỗng
+//  - Title quá dài → truncate MAX_QR_TITLE_LEN
+//  - Payload LUÔN ghi đè = title (để ổn định khi MQTT so khớp sau này)
+// ============================================================
+static int parseQrSpecFromAi(const String& spec,
+                             QuickReplyBtn* out, int maxOut) {
+  int n = 0;
+  int start = 0;
+  int len = spec.length();
+
+  while (start <= len && n < maxOut) {
+    int semi = spec.indexOf(';', start);
+    String item = (semi < 0) ? spec.substring(start)
+                             : spec.substring(start, semi);
+    item.trim();
+
+    if (item.length() > 0) {
+      int colon = item.indexOf(':');
+      // colon > 0: title không rỗng. colon == 0 hoặc <0 → bỏ nút.
+      if (colon > 0) {
+        QuickReplyBtn btn;
+        btn.title   = item.substring(0, colon);
+        btn.payload = item.substring(colon + 1);
+        btn.title.trim();
+        btn.payload.trim();
+
+        if (btn.title.length() > 0) {
+          if (btn.title.length() > MAX_QR_TITLE_LEN) {
+            btn.title = btn.title.substring(0, MAX_QR_TITLE_LEN);
+          }
+          // Payload = title (theo yêu cầu, đảm bảo ổn định)
+          btn.payload = btn.title;
+          out[n++] = btn;
+        }
+      }
+    }
+
+    if (semi < 0) break;
+    start = semi + 1;
+  }
+  return n;
+}
+
+int groqExtractQr(const String& reply, String& outText,
+                  QuickReplyBtn* outBtns, int maxOut) {
+  outText = reply;   // mặc định: giữ nguyên
+
+  int qrOpen = reply.indexOf("[QR]");
+  if (qrOpen < 0) return -1;
+
+  int qrClose = reply.indexOf("[/QR]", qrOpen + 4);
+  if (qrClose < 0) return 0;   // có mở, không đóng → fail
+
+  String spec = reply.substring(qrOpen + 4, qrClose);
+  spec.trim();
+
+  int n = parseQrSpecFromAi(spec, outBtns, maxOut);
+  if (n <= 0) return 0;
+
+  // Cắt cả block QR (kể cả 2 marker), gộp text trước + text sau
+  String text = reply.substring(0, qrOpen) +
+                reply.substring(qrClose + 5);
+  text.trim();
+  outText = text;
+
+  return n;
+}

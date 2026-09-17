@@ -15,3 +15,4 @@ void handleGroupCommand(const String& threadId,
                         const String& body,
                         const String& mid,
                         long long timestamp);
+void sendAck(const String& threadId, const String& mid);

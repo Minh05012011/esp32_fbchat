@@ -9,7 +9,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-
+#include "src/fb_api/fb_quick_reply.h"
 // ============================================================
 //  JSON escape
 // ============================================================
@@ -264,6 +264,9 @@ void geminiPrintInfo() {
 // ============================================================
 //  handlePendingAI — chạy khi có /ai, KHÔNG đóng WS
 // ============================================================
+// ============================================================
+//  handlePendingAI — chạy khi có /ai hoặc /q, KHÔNG đóng WS
+// ============================================================
 void handlePendingAI() {
   if (!g_aiPending) return;
 
@@ -273,15 +276,18 @@ void handlePendingAI() {
   String prompt   = g_aiPrompt;
   String threadId = g_aiThreadId;
   String replyMid = g_aiReplyToMsgId;
+  String service  = g_aiService;      // copy service ra local
 
   g_aiPending      = false;
   g_aiPrompt       = "";
   g_aiThreadId     = "";
   g_aiReplyToMsgId = "";
+  g_aiService      = "";
 
   Serial.println("\n╔══════════════════════════════════════════");
   Serial.println("║ [/ai PROCESS]");
   Serial.println("╠══════════════════════════════════════════");
+  Serial.printf ("║ Service  : %s\n", service.c_str());
   Serial.printf ("║ Prompt   : %.80s%s\n",
                  prompt.c_str(), prompt.length() > 80 ? "..." : "");
   Serial.printf ("║ Thread   : %s\n", threadId.c_str());
@@ -294,7 +300,7 @@ void handlePendingAI() {
   Serial.println("╚══════════════════════════════════════════");
 
   // ==========================================================
-  //  KEEP-ALIVE trước khi gọi Gemini (loop bị block 3-5s)
+  //  KEEP-ALIVE trước khi gọi AI (loop bị block 3-5s)
   // ==========================================================
   if (wsClient.connected()) {
     String mqttPing = String((char)0xC0) + String((char)0x00);
@@ -304,21 +310,21 @@ void handlePendingAI() {
 
     bool ok2 = wsSendFrame(0x9, nullptr, 0);
 
-    Serial.printf("[WS/MQTT] -> pre-Gemini PING (mqtt=%s, ws=%s)\n",
+    Serial.printf("[WS/MQTT] -> pre-AI PING (mqtt=%s, ws=%s)\n",
                   ok1 ? "ok" : "FAIL", ok2 ? "ok" : "FAIL");
   } else {
-    Serial.println("⚠️ [AI] WS đã đóng trước khi gọi Gemini");
+    Serial.println("⚠️ [AI] WS đã đóng trước khi gọi AI");
   }
 
-  logRAM("trc gemini (in handlePendingAI)");
+  logRAM("trc AI (in handlePendingAI)");
 
   // ==========================================================
-  //  GỌI GEMINI
+  //  GỌI AI
   // ==========================================================
   String reply;
   bool ok = false;
 
-  if (g_aiService == "groq") {
+  if (service == "groq") {
     Serial.println("⚡ Service: GROQ");
     ok = groqAsk(prompt, reply);
   } else {
@@ -327,32 +333,128 @@ void handlePendingAI() {
   }
 
   // ==========================================================
-  //  SAU GEMINI — kiểm tra WS
+  //  SAU AI — kiểm tra WS
   // ==========================================================
   bool wsAlive = wsClient.connected();
-  Serial.printf("🔍 [AI] Sau Gemini: WS=%s | ok=%d | replyLen=%d\n",
+  Serial.printf("🔍 [AI] Sau AI: WS=%s | ok=%d | replyLen=%d\n",
                 wsAlive ? "alive" : "DEAD",
                 (int)ok, reply.length());
 
   if (!wsAlive) {
-    Serial.println("⚠️ [AI] WS đã đóng trong lúc Gemini chạy");
+    Serial.println("⚠️ [AI] WS đã đóng trong lúc AI chạy");
     mqttConnected = false;
     g_syncToken = "";   // buộc create_queue lại
   }
 
   // ==========================================================
-  //  GỬI REPLY
+  //  XỬ LÝ REPLY
   // ==========================================================
+  bool sent = false;
+
   if (ok && reply.length() > 0) {
-    Serial.println("📤 [AI] Gửi reply vào FB...");
-    unsigned long tSend = millis();
-    bool sendOk = sendGroupMessage(threadId, reply);
-    Serial.printf("📤 [AI] sendGroupMessage %s in %lums\n",
-                  sendOk ? "OK" : "FAIL", millis() - tSend);
+
+    // ---------- GROQ: có thể chứa [QR]...[/QR] ----------
+    if (service == "groq") {
+      QuickReplyBtn qrBtns[MAX_QR_FROM_AI];
+      String textOnly;
+      int nQr = groqExtractQr(reply, textOnly, qrBtns, MAX_QR_FROM_AI);
+
+      Serial.printf("🔎 [AI] groqExtractQr → nQr=%d | textLen=%d\n",
+                    nQr, textOnly.length());
+
+      // ===== Case 1: Có QR hợp lệ → gửi 1 tin duy nhất =====
+      if (nQr > 0) {
+        String bodySend = (textOnly.length() > 0)
+                            ? textOnly
+                            : String("Chọn một tùy chọn:");
+
+        Serial.printf("📤 [AI] Gửi reply + %d nút QR | bodyLen=%d\n",
+                      nQr, bodySend.length());
+        for (int i = 0; i < nQr; i++) {
+          Serial.printf("   • '%s'\n", qrBtns[i].title.c_str());
+        }
+
+        unsigned long tSend = millis();
+        bool qrOk = sendQuickReplyMessage(threadId, bodySend, qrBtns, nQr);
+        Serial.printf("📤 [AI] sendQuickReplyMessage %s in %lums\n",
+                      qrOk ? "OK" : "FAIL", millis() - tSend);
+
+        if (qrOk) {
+          sent = true;
+        } else {
+          Serial.println("⚠️ [AI] QR send fail → fallback gửi text");
+          sent = sendGroupMessage(threadId, bodySend);
+        }
+      }
+
+      // ===== Case 2: Có marker [QR] nhưng parse fail → retry 1 lần =====
+      else if (nQr == 0) {
+        Serial.println("⚠️ [AI] Có [QR] nhưng parse fail → retry Groq 1 lần");
+
+        String reply2;
+        bool ok2 = groqAsk(prompt, reply2);
+        Serial.printf("🔁 [AI] Retry Groq: ok=%d | replyLen=%d\n",
+                      (int)ok2, reply2.length());
+
+        if (ok2 && reply2.length() > 0) {
+          int nQr2 = groqExtractQr(reply2, textOnly, qrBtns, MAX_QR_FROM_AI);
+          Serial.printf("🔎 [AI] Retry groqExtractQr → nQr=%d\n", nQr2);
+
+          if (nQr2 > 0) {
+            String bodySend = (textOnly.length() > 0)
+                                ? textOnly
+                                : String("Chọn một tùy chọn:");
+
+            Serial.printf("✅ [AI] Retry OK, gửi %d nút QR\n", nQr2);
+            unsigned long tSend = millis();
+            bool qrOk = sendQuickReplyMessage(threadId, bodySend,
+                                              qrBtns, nQr2);
+            Serial.printf("📤 [AI] sendQuickReplyMessage %s in %lums\n",
+                          qrOk ? "OK" : "FAIL", millis() - tSend);
+
+            if (qrOk) {
+              sent = true;
+            } else {
+              Serial.println("⚠️ [AI] Retry QR send fail → gửi text");
+              sent = sendGroupMessage(threadId, bodySend);
+            }
+          } else {
+            // Retry cũng fail QR
+            Serial.println("❌ [AI] Retry vẫn fail QR → gửi message lỗi");
+            sent = sendGroupMessage(threadId,
+                "❌ Có lỗi khi tạo lựa chọn, thử lại sau nhé!");
+          }
+        } else {
+          // Retry Groq fail luôn
+          Serial.println("❌ [AI] Retry Groq fail → gửi message lỗi");
+          sent = sendGroupMessage(threadId,
+              "❌ Bot đang bận, thử lại sau nhé!");
+        }
+      }
+
+      // ===== Case 3: Không có QR (-1) → gửi text bình thường =====
+      else {
+        Serial.println("📤 [AI] Không có QR → gửi reply text");
+        unsigned long tSend = millis();
+        sent = sendGroupMessage(threadId, reply);
+        Serial.printf("📤 [AI] sendGroupMessage %s in %lums\n",
+                      sent ? "OK" : "FAIL", millis() - tSend);
+      }
+
+    // ---------- GEMINI (hoặc service khác): chỉ gửi text ----------
+    } else {
+      Serial.println("📤 [AI] Gửi reply vào FB...");
+      unsigned long tSend = millis();
+      sent = sendGroupMessage(threadId, reply);
+      Serial.printf("📤 [AI] sendGroupMessage %s in %lums\n",
+                    sent ? "OK" : "FAIL", millis() - tSend);
+    }
+
   } else {
-    Serial.println("⚠️ [AI] Gemini fail → gửi câu báo lỗi");
-    bool sendOk = sendGroupMessage(threadId, "❌ Bot đang bận, thử lại sau nhé!");
-    Serial.printf("📤 [AI] fallback send %s\n", sendOk ? "OK" : "FAIL");
+    // ===== AI fail hoàn toàn → gửi câu báo lỗi =====
+    Serial.println("⚠️ [AI] AI fail → gửi câu báo lỗi");
+    sent = sendGroupMessage(threadId, "❌ Bot đang bận, thử lại sau nhé!");
+    Serial.printf("📤 [AI] fallback send %s\n", sent ? "OK" : "FAIL");
   }
 
   Serial.printf("⏱️  [AI] Tổng thời gian xử lý: %lums\n",

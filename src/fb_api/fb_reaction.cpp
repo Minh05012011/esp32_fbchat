@@ -127,7 +127,8 @@ bool fbReactMessage(const String& messageId,
   Serial.printf("   [HTTP] code=%d | %d bytes\n", code, resp.length());
 
   // Python chỉ làm raise_for_status -> 200 là OK.
-
+  // Mình vẫn log preview để debug, và log riêng nếu có "error" trong body
+  // (không đổi kết quả trả về để khớp Python).
   if (code == 200) {
     bool hasErrorKey = (resp.indexOf("\"error\"")  >= 0) ||
                        (resp.indexOf("\"errors\"") >= 0);
